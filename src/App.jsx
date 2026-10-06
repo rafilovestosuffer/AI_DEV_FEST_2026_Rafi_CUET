@@ -262,9 +262,16 @@ export default function App() {
           try { bnTitles[it.req.id] = await bnToPng(it.req.title_bn) } catch { /* optional */ }
         }
       }
+      const textImages = {}
+      for (const v of [reqData.tender.title, reqData.tender.procuring_entity, reqData.tender.bidder]) {
+        if (v && /[^\x00-\xFF]/.test(v) && !textImages[v]) {
+          try { textImages[v] = await bnToPng(v) } catch { /* optional */ }
+        }
+      }
       const pages = sealPages(items)
       const { bytes, total, starts } = await buildPackage(reqData.tender, items, {
         bnTitles,
+        textImages,
         seal: seal && pages.size ? { bytes: seal.bytes, pages, width: 90 } : null,
       })
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
@@ -531,7 +538,7 @@ export default function App() {
                     <span className={`status s-${status}`}>{t['st_' + status]}</span>
                     {why(r, status) && <div className={`why ${isBlocking(status) ? 'bad' : ''}`}>{why(r, status)}</div>}
                     {status === 'ok' && r.has_expiry && expiry[r.id] && daysAfter(expiry[r.id], deadline) <= 30 && (
-                      <div className="soon">⚠ {t.soon.replace('{n}', daysAfter(expiry[r.id], deadline))}</div>
+                      <div className="soon">⚠ {daysAfter(expiry[r.id], deadline) === 0 ? t.soonSameDay : t.soon.replace('{n}', N(daysAfter(expiry[r.id], deadline)))}</div>
                     )}
                   </td>
                 </tr>

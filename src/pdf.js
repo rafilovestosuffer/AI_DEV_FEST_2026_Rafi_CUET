@@ -87,7 +87,8 @@ function copyWithBand(page) {
 // items: [{ req, file }] sorted by order, only requirements that have a file.
 // opts.bnTitles: { reqId: {bytes,w,h} } PNG images of Bangla titles for the index page.
 // opts.seal: { bytes (PNG), pages: Set of package page numbers, width (pt) }.
-export async function buildPackage(tender, items, { withIndex = true, bnTitles = null, seal = null } = {}) {
+// opts.textImages: { text: {bytes,w,h} } PNG images for cover values that use non-Latin script (e.g. Bangla).
+export async function buildPackage(tender, items, { withIndex = true, bnTitles = null, seal = null, textImages = null } = {}) {
   const out = await PDFDocument.create()
   out.setTitle(`${safe(tender.tender_id)} Package`)
   out.setCreator('Tender Package Builder')
@@ -121,6 +122,20 @@ export async function buildPackage(tender, items, { withIndex = true, bnTitles =
   ]
   for (const [k, v] of rows) {
     cover.drawText(k + ':', { x: left, y, size: 11.5, font: bold, color: ink })
+    // Standard PDF fonts cannot show Bangla: draw such values as a browser-rendered image instead of "???"
+    const img = textImages && /[^\x00-\xFF]/.test(String(v ?? '')) && textImages[v]
+    if (img) {
+      try {
+        const png = await out.embedPng(img.bytes)
+        let h = 11.5 * 1.55
+        let w = (img.w / img.h) * h
+        const room = maxW - 150
+        if (w > room) { h *= room / w; w = room }
+        cover.drawImage(png, { x: left + 150, y: y - h * 0.3, width: w, height: h })
+        y -= 15 + 8
+        continue
+      } catch { /* fall back to plain text */ }
+    }
     const lines = wrap(v, font, 11.5, maxW - 150)
     lines.forEach((ln, i) => cover.drawText(ln, { x: left + 150, y: y - i * 15, size: 11.5, font, color: ink }))
     y -= 15 * lines.length + 8
