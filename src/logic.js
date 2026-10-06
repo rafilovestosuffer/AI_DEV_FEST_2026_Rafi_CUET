@@ -121,7 +121,8 @@ export function autoMatch(requirements, files, matches) {
   for (const r of requirements) {
     if (next[r.id]) continue
     for (const f of files) {
-      const s = score(r, f.name)
+      // file name first; first-page text (if any) as a weaker signal for badly named files
+      const s = Math.max(score(r, f.name), f.text ? 0.9 * score(r, f.text.slice(0, 300)) : 0)
       if (s >= 1) pairs.push({ r, f, s, y: latestYear(f.name) })
     }
   }

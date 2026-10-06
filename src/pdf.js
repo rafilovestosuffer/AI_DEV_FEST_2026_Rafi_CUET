@@ -85,7 +85,9 @@ function copyWithBand(page) {
 }
 
 // items: [{ req, file }] sorted by order, only requirements that have a file.
-export async function buildPackage(tender, items, { withIndex = true } = {}) {
+// opts.bnTitles: { reqId: {bytes,w,h} } PNG images of Bangla titles for the index page.
+// opts.seal: { bytes (PNG), pages: Set of package page numbers, width (pt) }.
+export async function buildPackage(tender, items, { withIndex = true, bnTitles = null, seal = null } = {}) {
   const out = await PDFDocument.create()
   out.setTitle(`${safe(tender.tender_id)} Package`)
   out.setCreator('Tender Package Builder')
@@ -149,15 +151,30 @@ export async function buildPackage(tender, items, { withIndex = true } = {}) {
     index.drawText('Pages', { x: A4[0] - left - 150, y: iy, size: 11, font: bold, color: ink })
     index.drawText('Starts on page', { x: A4[0] - left - font.widthOfTextAtSize('Starts on page', 11) - 2, y: iy, size: 11, font: bold, color: ink })
     iy -= 20
-    const ih = items.length > 30 ? Math.max(11, Math.floor((iy - FOOTER_H - 20) / items.length)) : 19
+    const hasBn = bnTitles && items.some((it) => bnTitles[it.req.id])
+    const ih = items.length > 24 ? Math.max(11, Math.floor((iy - FOOTER_H - 20) / items.length)) : hasBn ? 24 : 19
     const ifs = Math.min(11, ih - 4)
-    items.forEach((it, i) => {
-      index.drawText(fitText(`${i + 1}. ${it.req.title_en}`, font, ifs, maxW - 170), { x: left, y: iy, size: ifs, font, color: ink })
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      const label = fitText(`${i + 1}. ${it.req.title_en}`, font, ifs, maxW - 170)
+      index.drawText(label, { x: left, y: iy, size: ifs, font, color: ink })
+      const bn = hasBn && bnTitles[it.req.id]
+      if (bn) {
+        try {
+          const img = await out.embedPng(bn.bytes)
+          const x = left + font.widthOfTextAtSize(label, ifs) + 8
+          const room = A4[0] - left - 160 - x
+          let h = ifs * 1.55
+          let w = (bn.w / bn.h) * h
+          if (w > room) { h *= room / w; w = room }
+          if (w > 10) index.drawImage(img, { x, y: iy - h * 0.3, width: w, height: h })
+        } catch { /* Bangla image is optional */ }
+      }
       index.drawText(String(it.file.pages), { x: A4[0] - left - 140, y: iy, size: ifs, font, color: muted })
       const sp = String(starts[i])
       index.drawText(sp, { x: A4[0] - left - font.widthOfTextAtSize(sp, ifs) - 2, y: iy, size: ifs, font, color: ink })
       iy -= ih
-    })
+    }
   }
 
   // ---- Documents: all pages in original order ----
@@ -175,6 +192,18 @@ export async function buildPackage(tender, items, { withIndex = true } = {}) {
         out.addPage(copyWithBand(copied))
       }
     }
+  }
+
+  // ---- Seal / signature (bonus) on chosen package pages, above the footer band ----
+  if (seal && seal.bytes && seal.pages && seal.pages.size) {
+    const img = await out.embedPng(seal.bytes)
+    const w = seal.width || 90
+    const h = (img.height / img.width) * w
+    out.getPages().forEach((page, i) => {
+      if (!seal.pages.has(i + 1)) return
+      const box = page.getCropBox()
+      page.drawImage(img, { x: box.x + box.width - w - 36, y: box.y + FOOTER_H + 14, width: w, height: h })
+    })
   }
 
   // ---- Footer on every page: "<tender_id> | Page X of Y" ----

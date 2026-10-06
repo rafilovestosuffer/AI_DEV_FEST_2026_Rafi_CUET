@@ -1,13 +1,23 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { T } from './i18n.js'
 import { inspectFile, buildPackage, MAX_FILES, MAX_BYTES } from './pdf.js'
+import { analyzePdf, bnToPng } from './preview.js'
 import { parseRequirements, computeStatus, isBlocking, autoMatch as suggestMatches } from './logic.js'
 const SAVE_KEY = 'tender-package-builder:v1'
 
 let nextId = 1
 
 export default function App() {
-  const [lang, setLang] = useState('en')
+  const [lang, setLang] = useState(() => {
+    try { return localStorage.getItem('tpb-lang') === 'bn' ? 'bn' : 'en' } catch { return 'en' }
+  })
+  useEffect(() => {
+    document.documentElement.lang = lang
+    try { localStorage.setItem('tpb-lang', lang) } catch { /* storage blocked */ }
+  }, [lang])
+  const [seal, setSeal] = useState(null) // { bytes, url, name }
+  const [sealMode, setSealMode] = useState('last')
+  const [sealCustom, setSealCustom] = useState('')
   const t = T[lang]
   const [reqData, setReqData] = useState(null)
   const [jsonError, setJsonError] = useState('')
@@ -88,7 +98,8 @@ export default function App() {
         msgs.push(`"${file.name}" ${t[info.error]}`)
         continue
       }
-      added.push({ id: nextId++, name: file.name, size: file.size, ...info })
+      const extra = await analyzePdf(info.bytes)
+      added.push({ id: nextId++, name: file.name, size: file.size, url: URL.createObjectURL(new Blob([info.bytes], { type: 'application/pdf' })), ...info, ...extra })
     }
     setFiles((prev) => [...prev, ...added])
     // Re-apply saved matches (by content hash) after "Open saved work"
@@ -148,11 +159,54 @@ export default function App() {
     invalidate()
   }
 
+  // Package page numbers that get the seal. Cover = 1, index = 2, documents start at 3.
+  function sealPages(items) {
+    const set = new Set()
+    if (!seal || sealMode === 'none') return set
+    let p = 3
+    for (const it of items) {
+      const first = p
+      p += it.file.pages
+      if (sealMode === 'last') set.add(p - 1)
+      if (sealMode === 'all') for (let k = first; k < p; k++) set.add(k)
+    }
+    if (sealMode === 'custom') {
+      for (const part of sealCustom.split(/[,\s]+/)) {
+        const m = part.match(/^(\d+)(?:-(\d+))?$/)
+        if (!m) continue
+        const a = +m[1], b = m[2] ? +m[2] : a
+        for (let k = Math.min(a, b); k <= Math.max(a, b) && k < p; k++) if (k >= 1) set.add(k)
+      }
+    }
+    return set
+  }
+
+  async function onSeal(e) {
+    const file = e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    if (!isPng) { setNotice(t.sealBadPng); return }
+    setSeal({ bytes, name: file.name, url: URL.createObjectURL(new Blob([bytes], { type: 'image/png' })) })
+    invalidate()
+  }
+
   async function generate() {
     setBusy(true)
     try {
       const items = rows.filter((x) => x.f).map((x) => ({ req: x.r, file: x.f }))
-      const { bytes, total } = await buildPackage(reqData.tender, items)
+      const bnTitles = {}
+      for (const it of items) {
+        if (it.req.title_bn && it.req.title_bn !== it.req.title_en) {
+          try { bnTitles[it.req.id] = await bnToPng(it.req.title_bn) } catch { /* optional */ }
+        }
+      }
+      const pages = sealPages(items)
+      const { bytes, total } = await buildPackage(reqData.tender, items, {
+        bnTitles,
+        seal: seal && pages.size ? { bytes: seal.bytes, pages, width: 90 } : null,
+      })
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
       setResult({ url, total, name: `${reqData.tender.tender_id}_Package.pdf` })
     } catch (e) {
@@ -262,17 +316,24 @@ export default function App() {
           {files.length === 0 ? (
             <p className="muted">{t.noFiles}</p>
           ) : (
+            <div className="scroll">
             <table>
               <thead>
-                <tr><th>{t.fileName}</th><th>{t.pages}</th><th>{t.matchedTo}</th><th></th></tr>
+                <tr><th></th><th>{t.fileName}</th><th>{t.pages}</th><th>{t.size}</th><th>{t.matchedTo}</th><th></th></tr>
               </thead>
               <tbody>
                 {files.map((f) => {
                   const r = reqForFile(f.id)
                   return (
                     <tr key={f.id} className={dupOf[f.id] ? 'dup' : ''}>
+                      <td className="thumb-cell">
+                        <a href={f.url} target="_blank" rel="noreferrer" title={t.view}>
+                          {f.thumb ? <img className="thumb" src={f.thumb} alt="" /> : <span className="thumb ph">PDF</span>}
+                        </a>
+                      </td>
                       <td>
-                        {f.name}
+                        <a href={f.url} target="_blank" rel="noreferrer" className="fname" title={t.view}>{f.name}</a>
+                        {f.scanned && <div className="badge info">{t.scanned}</div>}
                         {dupOf[f.id] && (
                           <div className="badge warn">
                             {t.duplicate} — {t.duplicateOf} {dupOf[f.id].map((g) => g.name).join(', ')}
@@ -280,13 +341,15 @@ export default function App() {
                         )}
                       </td>
                       <td>{f.pages}</td>
-                      <td>{r ? reqTitle(r) : '—'}</td>
+                      <td className="nowrap">{(f.size / 1024).toFixed(0)} KB</td>
+                      <td>{r ? <strong>{reqTitle(r)}</strong> : <span className="muted">{t.notUsed}</span>}</td>
                       <td><button className="ghost" onClick={() => removeFile(f.id)}>{t.remove}</button></td>
                     </tr>
                   )
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </section>
       )}
@@ -295,7 +358,16 @@ export default function App() {
         <section>
           <h2>{t.step3}</h2>
           <p className="muted">{t.step3Help}</p>
-          {files.length > 0 && <button className="ghost" onClick={autoMatch}>{t.autoMatch}</button>}
+          <div className="toolbar">
+            {files.length > 0 && <button className="ghost" onClick={autoMatch}>✨ {t.autoMatch}</button>}
+            <div className="chips">
+              {['ok', 'missing', 'expiryNeeded', 'expired', 'notProvided'].map((k) => {
+                const n = rows.filter((x) => x.status === k).length
+                return n ? <span key={k} className={`status s-${k}`}>{t['st_' + k]}: {n}</span> : null
+              })}
+            </div>
+          </div>
+          <div className="scroll">
           <table className="reqs">
             <thead>
               <tr><th>{t.order}</th><th>{t.document}</th><th>{t.file}</th><th>{t.expiry}</th><th>{t.status}</th></tr>
@@ -324,7 +396,14 @@ export default function App() {
                   <td>
                     {r.has_expiry ? (
                       f ? (
-                        <input type="date" value={expiry[r.id] || ''} onChange={(e) => { setExpiry({ ...expiry, [r.id]: e.target.value }); invalidate() }} />
+                        <>
+                          <input type="date" value={expiry[r.id] || ''} onChange={(e) => { setExpiry({ ...expiry, [r.id]: e.target.value }); invalidate() }} />
+                          {f.expiryHint && expiry[r.id] !== f.expiryHint && (
+                            <button className="hint" onClick={() => { setExpiry({ ...expiry, [r.id]: f.expiryHint }); invalidate() }}>
+                              {t.foundInFile}: {f.expiryHint} — {t.useDate}
+                            </button>
+                          )}
+                        </>
                       ) : <span className="muted small">—</span>
                     ) : <span className="muted small">{t.notNeeded}</span>}
                   </td>
@@ -333,6 +412,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          </div>
         </section>
       )}
 
@@ -349,6 +429,33 @@ export default function App() {
           ) : (
             <p className="ok-text">✔ {t.ready}</p>
           )}
+          <details className="seal">
+            <summary>🖋 {t.sealTitle}</summary>
+            <p className="muted small">{t.sealHelp}</p>
+            <div className="seal-row">
+              <label className="btn ghost-btn">
+                {seal ? t.sealChange : t.sealChoose}
+                <input type="file" accept="image/png" onChange={onSeal} hidden />
+              </label>
+              {seal && <img src={seal.url} alt="" className="seal-img" />}
+              {seal && <button className="ghost" onClick={() => { setSeal(null); invalidate() }}>{t.remove}</button>}
+            </div>
+            {seal && (
+              <div className="seal-row">
+                <label>{t.sealPages}{' '}
+                  <select value={sealMode} onChange={(e) => { setSealMode(e.target.value); invalidate() }}>
+                    <option value="last">{t.sealLast}</option>
+                    <option value="all">{t.sealAll}</option>
+                    <option value="custom">{t.sealCustom}</option>
+                    <option value="none">{t.sealNone}</option>
+                  </select>
+                </label>
+                {sealMode === 'custom' && (
+                  <input className="text" placeholder="3, 5-7" value={sealCustom} onChange={(e) => { setSealCustom(e.target.value); invalidate() }} />
+                )}
+              </div>
+            )}
+          </details>
           <div className="actions">
             <button className="primary" disabled={!canGenerate} onClick={generate}>
               {busy ? t.generating : t.generate}
