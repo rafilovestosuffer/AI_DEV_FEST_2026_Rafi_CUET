@@ -49,6 +49,9 @@ Status rules follow §5 exactly. Dates are compared as `YYYY-MM-DD` strings (no 
 - ✅ **Auto-match:** scores file names (plus first-page text for badly named files), picks the newest year when two files tie, and never uses duplicates.
 - ✅ **Bad files handled safely:** non-PDF (header check, not only the extension), damaged and password-protected PDFs, and the 30-file / 50 MB limits each get a clear message.
 - ✅ **AI help (optional):** the user types their own Anthropic API key, which stays in memory and is never saved. On click, only the unused files are sent (text, or a picture of page 1 for scanned files) to suggest matches. Everything else works without AI. No key is in this repository or the site.
+- ➕ **Works offline:** an installable web app with a service worker. After one visit it runs with no internet, which suits offices with unreliable connections. Only the app's own files are cached, never tender documents.
+- ➕ **Package preview in the page:** check the cover, index and page numbers before downloading.
+- ➕ **Readiness bar** ("Required documents ready: 7 / 8") and an **early expiry warning** when a document is valid 30 days or less after the deadline. The warning does not block; the §5 rules stay exactly as written.
 - ➕ Extra help for non-technical users: expiry dates found in the PDF text are offered as hints (never filled in automatically), scanned files carry a "scanned image" badge, unused files are listed when a document is missing, status count chips, and the chosen language is remembered.
 
 ## Sample pack: problems found and resolved
@@ -61,7 +64,16 @@ Status rules follow §5 exactly. Dates are compared as `YYYY-MM-DD` strings (no 
 | `01_financial…`, `02_technical…`, `03_tin…`, `04_vat…` | Number prefixes in the file names do not follow the tender order | Order always comes from `requirements.json` |
 | Audited Financial Statement, Manufacturer's Authorization | No file (optional) | **Not provided**, does not block |
 
-Result: [`output/T-2026-0417_Package.pdf`](output/T-2026-0417_Package.pdf), 17 pages = cover + index + 15 document pages. Screenshots are in [`screenshots/`](screenshots/).
+Result: [`output/T-2026-0417_Package.pdf`](output/T-2026-0417_Package.pdf), 17 pages = cover + index + 15 document pages, generated on the live site.
+
+## Screenshots
+| | |
+|---|---|
+| Upload: non-PDF rejected, duplicates flagged, thumbnails | [`01_upload_rejects_duplicates.png`](screenshots/01_upload_rejects_duplicates.png) |
+| **Document statuses** with problems (Expired, Expiry date needed, Missing, Not provided) and Generate blocked with reasons | [`02_statuses_problems_en.png`](screenshots/02_statuses_problems_en.png) |
+| All fixed: every status OK, package ready, preview | [`03_all_ok_package_ready_en.png`](screenshots/03_all_ok_package_ready_en.png) |
+| The same screen in Bangla | [`04_all_ok_bangla.png`](screenshots/04_all_ok_bangla.png) |
+| Offline mode | [`05_offline_mode.png`](screenshots/05_offline_mode.png) |
 
 ## Known problems / limits
 - The cover page is English only, as the rules require; Bangla appears on the index page.
