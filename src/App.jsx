@@ -32,6 +32,14 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [apiKey, setApiKey] = useState('') // kept in memory only, never saved
   const [aiBusy, setAiBusy] = useState(false)
+  const [online, setOnline] = useState(() => navigator.onLine)
+  useEffect(() => {
+    const up = () => setOnline(true)
+    const down = () => setOnline(false)
+    window.addEventListener('online', up)
+    window.addEventListener('offline', down)
+    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down) }
+  }, [])
 
   const reqs = reqData ? reqData.requirements : [] // already sorted by order in parseRequirements
   const deadline = reqData?.tender.submission_deadline
@@ -54,6 +62,9 @@ export default function App() {
   })
   const blocking = rows.filter((x) => isBlocking(x.status))
   const canGenerate = reqData && blocking.length === 0 && !busy
+  const mandatoryRows = rows.filter((x) => x.r.mandatory)
+  const readyCount = mandatoryRows.filter((x) => x.status === 'ok').length
+  const daysAfter = (a, b) => Math.round((Date.parse(a + 'T00:00:00Z') - Date.parse(b + 'T00:00:00Z')) / 86400000)
   const hintRows = rows.filter(({ r, f }) => r.has_expiry && f && f.expiryHint && !expiry[r.id])
   const usedIds = new Set(Object.values(match))
   const usedHashes = new Set(files.filter((f) => usedIds.has(f.id)).map((f) => f.hash))
@@ -322,6 +333,7 @@ export default function App() {
         </div>
       </header>
       <p className="privacy">🔒 {t.privacy}</p>
+      {!online && <div className="offline">📴 {t.offline}</div>}
       {notice && <div className="notice" onClick={() => setNotice('')}>{notice}</div>}
 
       <section>
@@ -403,6 +415,12 @@ export default function App() {
         <section>
           <h2>{t.step3}</h2>
           <p className="muted">{t.step3Help}</p>
+          {mandatoryRows.length > 0 && (
+            <div className="ready" aria-label={t.readiness}>
+              <div className="ready-text">{t.readiness}: <strong>{readyCount} / {mandatoryRows.length}</strong></div>
+              <div className="bar"><span style={{ width: `${(100 * readyCount) / mandatoryRows.length}%` }} /></div>
+            </div>
+          )}
           <div className="toolbar">
             {files.length > 0 && <button className="ghost" onClick={autoMatch}>✨ {t.autoMatch}</button>}
             {hintRows.length > 0 && (
@@ -457,7 +475,12 @@ export default function App() {
                       ) : <span className="muted small">—</span>
                     ) : <span className="muted small">{t.notNeeded}</span>}
                   </td>
-                  <td><span className={`status s-${status}`}>{t['st_' + status]}</span></td>
+                  <td>
+                    <span className={`status s-${status}`}>{t['st_' + status]}</span>
+                    {status === 'ok' && r.has_expiry && expiry[r.id] && daysAfter(expiry[r.id], deadline) <= 30 && (
+                      <div className="soon">⚠ {t.soon.replace('{n}', daysAfter(expiry[r.id], deadline))}</div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -532,6 +555,10 @@ export default function App() {
             <div className="result">
               <p>✔ {t.done} — {t.totalPages}: {result.total}</p>
               <a className="btn primary" href={result.url} download={result.name}>⬇ {t.download} {result.name}</a>
+              <details className="preview" open>
+                <summary>{t.previewTitle}</summary>
+                <iframe className="pdf-preview" src={result.url} title={t.previewTitle} />
+              </details>
             </div>
           )}
         </section>

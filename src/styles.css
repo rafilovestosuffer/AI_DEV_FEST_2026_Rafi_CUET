@@ -56,3 +56,13 @@ input.text { font:inherit; padding:6px 8px; border:1px solid var(--line); border
 .hint-line { margin:10px 0 0; color:var(--text); font-weight:400; }
 .blockers .hint-line { color:var(--text); font-weight:400; }
 input.text.key { width:260px; }
+
+.offline { background:#fff4e5; border:1px solid #f0c27b; color:#6b4300; padding:10px 14px; border-radius:8px; margin-top:12px; }
+.ready { margin-top:12px; }
+.ready-text { font-size:15px; margin-bottom:6px; }
+.bar { height:10px; background:#e6ebf3; border-radius:999px; overflow:hidden; }
+.bar span { display:block; height:100%; background:linear-gradient(90deg, #17803d, #2fae5d); transition:width .3s; }
+.soon { font-size:12.5px; color:#8a5300; margin-top:4px; max-width:220px; }
+details.preview { margin-top:12px; }
+details.preview summary { cursor:pointer; font-weight:600; }
+.pdf-preview { width:100%; height:640px; border:1px solid var(--line); border-radius:8px; margin-top:8px; background:#fff; }

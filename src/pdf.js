@@ -18,7 +18,7 @@ export async function inspectFile(file) {
   const isPdfName = /\.pdf$/i.test(file.name)
   const bytes = new Uint8Array(await file.arrayBuffer())
   const head = new TextDecoder('latin1').decode(bytes.slice(0, 1024))
-  if (!head.includes('%PDF-')) return { error: isPdfName ? 'damaged' : 'notPdf' }
+  if (!head.includes('%PDF-')) return { error: 'notPdf' }
   if (!isPdfName && file.type && file.type !== 'application/pdf') return { error: 'notPdf' }
   const hash = await sha256(bytes)
   try {
