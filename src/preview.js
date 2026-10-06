@@ -90,3 +90,21 @@ export async function bnToPng(text, px = 44) {
   const blob = await new Promise((r) => c.toBlob(r, 'image/png'))
   return { bytes: new Uint8Array(await blob.arrayBuffer()), w, h }
 }
+
+// Larger first-page image (base64 JPEG, no prefix) for the optional AI helper.
+export async function pageImage(bytes, width = 900) {
+  const task = pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false })
+  try {
+    const doc = await task.promise
+    const page = await doc.getPage(1)
+    const vp0 = page.getViewport({ scale: 1 })
+    const vp = page.getViewport({ scale: width / vp0.width })
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.ceil(vp.width)
+    canvas.height = Math.ceil(vp.height)
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp, canvas }).promise
+    return canvas.toDataURL('image/jpeg', 0.8).split(',')[1]
+  } finally {
+    task.destroy()
+  }
+}

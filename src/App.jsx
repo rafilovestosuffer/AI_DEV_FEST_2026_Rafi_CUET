@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { T } from './i18n.js'
 import { inspectFile, buildPackage, MAX_FILES, MAX_BYTES } from './pdf.js'
-import { analyzePdf, bnToPng } from './preview.js'
+import { analyzePdf, bnToPng, pageImage } from './preview.js'
+import { saveProject, loadProject } from './store.js'
+import { aiSuggest } from './ai.js'
 import { parseRequirements, computeStatus, isBlocking, autoMatch as suggestMatches } from './logic.js'
-const SAVE_KEY = 'tender-package-builder:v1'
 
 let nextId = 1
 
@@ -29,7 +30,8 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [notice, setNotice] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const pendingRestore = useRef(null) // reqId -> hash, from saved work
+  const [apiKey, setApiKey] = useState('') // kept in memory only, never saved
+  const [aiBusy, setAiBusy] = useState(false)
 
   const reqs = reqData ? reqData.requirements : [] // already sorted by order in parseRequirements
   const deadline = reqData?.tender.submission_deadline
@@ -104,26 +106,17 @@ export default function App() {
       added.push({ id: nextId++, name: file.name, size: file.size, url: URL.createObjectURL(new Blob([info.bytes], { type: 'application/pdf' })), ...info })
     }
     setFiles((prev) => [...prev, ...added])
-    // Thumbnails, text and expiry hints load in the background so the list appears at once
-    ;(async () => {
-      for (const f of added) {
-        const extra = await analyzePdf(f.bytes)
-        setFiles((prev) => prev.map((g) => (g.id === f.id ? { ...g, ...extra } : g)))
-      }
-    })()
-    // Re-apply saved matches (by content hash) after "Open saved work"
-    if (pendingRestore.current) {
-      setMatch((prev) => {
-        const m = { ...prev }
-        for (const [rid, hash] of Object.entries(pendingRestore.current)) {
-          const f = added.find((x) => x.hash === hash)
-          if (f && !m[rid]) m[rid] = f.id
-        }
-        return m
-      })
-    }
+    analyzeInBackground(added)
     setMessages(msgs)
     invalidate()
+  }
+
+  // Thumbnails, text and expiry hints load in the background so the list appears at once
+  async function analyzeInBackground(list) {
+    for (const f of list) {
+      const extra = await analyzePdf(f.bytes)
+      setFiles((prev) => prev.map((g) => (g.id === f.id ? { ...g, ...extra } : g)))
+    }
   }
 
   function removeFile(id) {
@@ -238,33 +231,75 @@ export default function App() {
     a.click()
   }
 
-  function saveWork() {
-    const byHash = {}
-    for (const [rid, fid] of Object.entries(match)) {
-      const f = fileById(fid)
-      if (f) byHash[rid] = f.hash
-    }
+  async function saveWork() {
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ reqData, expiry, byHash, lang }))
+      const idx = Object.fromEntries(files.map((f, i) => [f.id, i]))
+      await saveProject({
+        reqData,
+        expiry,
+        match: Object.fromEntries(Object.entries(match).map(([rid, fid]) => [rid, idx[fid]])),
+        files: files.map((f) => ({ name: f.name, size: f.size, bytes: f.bytes, hash: f.hash, pages: f.pages })),
+        savedAt: new Date().toISOString(),
+      })
       setNotice(t.saved)
-    } catch {
-      setNotice('Storage not available')
+    } catch (e) {
+      setNotice(`${t.saveError} ${e.message || ''}`)
     }
   }
 
-  function openWork() {
+  async function openWork() {
     try {
-      const s = JSON.parse(localStorage.getItem(SAVE_KEY))
-      if (!s) throw new Error()
+      const s = await loadProject()
+      if (!s || !s.reqData) { setNotice(t.noSaved); return }
+      const restored = (s.files || []).map((f) => ({
+        ...f,
+        id: nextId++,
+        url: URL.createObjectURL(new Blob([f.bytes], { type: 'application/pdf' })),
+      }))
+      const m = {}
+      for (const [rid, i] of Object.entries(s.match || {})) if (restored[i]) m[rid] = restored[i].id
       setReqData(s.reqData)
+      setFiles(restored)
+      setMatch(m)
       setExpiry(s.expiry || {})
-      setMatch({})
-      setFiles([])
-      pendingRestore.current = s.byHash || {}
-      setNotice(T[lang].restored)
+      setMessages([])
+      setJsonError('')
+      setNotice(`${t.restored} (${s.savedAt ? new Date(s.savedAt).toLocaleString() : ''})`)
       invalidate()
+      analyzeInBackground(restored)
     } catch {
       setNotice(t.noSaved)
+    }
+  }
+
+  async function askAi() {
+    const emptyReqs = reqs.filter((r) => !match[r.id])
+    if (!apiKey.trim()) { setNotice(t.aiNoKey); return }
+    if (!emptyReqs.length || !unusedFiles.length) { setNotice(t.aiNothing); return }
+    setAiBusy(true)
+    try {
+      const payload = []
+      for (const f of unusedFiles) {
+        payload.push({ name: f.name, text: f.text, image: f.scanned || !f.text ? await pageImage(f.bytes) : null })
+      }
+      const sugg = await aiSuggest({ apiKey: apiKey.trim(), requirements: emptyReqs, files: payload })
+      const m = { ...match }
+      const notes = []
+      for (const sg of sugg) {
+        const f = unusedFiles.find((x) => x.name === sg.file)
+        const r = emptyReqs.find((x) => x.id === sg.req)
+        if (!f || !r || m[r.id] || Object.values(m).includes(f.id)) continue
+        if (Object.values(m).some((fid) => files.find((g) => g.id === fid)?.hash === f.hash)) continue
+        m[r.id] = f.id
+        notes.push(`${f.name} → ${reqTitle(r)} (${sg.reason || ''})`)
+      }
+      setMatch(m)
+      setNotice(notes.length ? `${t.aiDone} ${notes.join('; ')}` : t.aiNone)
+      invalidate()
+    } catch (e) {
+      setNotice(`${t.aiError} ${e.message}`)
+    } finally {
+      setAiBusy(false)
     }
   }
 
@@ -422,6 +457,16 @@ export default function App() {
             </tbody>
           </table>
           </div>
+          {files.length > 0 && (
+            <details className="seal">
+              <summary>🤖 {t.aiTitle}</summary>
+              <p className="muted small">{t.aiHelp}</p>
+              <div className="seal-row">
+                <input className="text key" type="password" autoComplete="off" placeholder="sk-ant-..." value={apiKey} onChange={(e) => setApiKey(e.target.value)} aria-label={t.aiKey} />
+                <button className="ghost" disabled={aiBusy} onClick={askAi}>{aiBusy ? t.aiWorking : t.aiAsk}</button>
+              </div>
+            </details>
+          )}
         </section>
       )}
 

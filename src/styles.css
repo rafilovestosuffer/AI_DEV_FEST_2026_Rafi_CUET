@@ -55,3 +55,4 @@ details.seal summary { cursor:pointer; font-weight:600; }
 input.text { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; width:140px; }
 .hint-line { margin:10px 0 0; color:var(--text); font-weight:400; }
 .blockers .hint-line { color:var(--text); font-weight:400; }
+input.text.key { width:260px; }
