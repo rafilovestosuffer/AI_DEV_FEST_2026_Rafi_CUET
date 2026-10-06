@@ -4,6 +4,7 @@ import { inspectFile, buildPackage, MAX_FILES, MAX_BYTES } from './pdf.js'
 import { analyzePdf, bnToPng, pageImage } from './preview.js'
 import { saveProject, loadProject } from './store.js'
 import { aiSuggest } from './ai.js'
+import { verifyPackage, VerifyPanel } from './verify.js'
 import { parseRequirements, computeStatus, isBlocking, autoMatch as suggestMatches } from './logic.js'
 
 let nextId = 1
@@ -217,12 +218,14 @@ export default function App() {
         }
       }
       const pages = sealPages(items)
-      const { bytes, total } = await buildPackage(reqData.tender, items, {
+      const { bytes, total, starts } = await buildPackage(reqData.tender, items, {
         bnTitles,
         seal: seal && pages.size ? { bytes: seal.bytes, pages, width: 90 } : null,
       })
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
       setResult({ url, total, name: `${reqData.tender.tender_id}_Package.pdf` })
+      // Re-open the finished file and prove Section 6 on the real bytes
+      verifyPackage(bytes, { tender: reqData.tender, items, starts, total }).then((report) => setResult((r) => (r && r.url === url ? { ...r, report } : r))).catch(() => {})
     } catch (e) {
       setNotice(`${t.genError} ${e.message}`)
     } finally {
@@ -555,6 +558,7 @@ export default function App() {
             <div className="result">
               <p>✔ {t.done} — {t.totalPages}: {result.total}</p>
               <a className="btn primary" href={result.url} download={result.name}>⬇ {t.download} {result.name}</a>
+              <VerifyPanel report={result.report} lang={lang} />
               <details className="preview" open>
                 <summary>{t.previewTitle}</summary>
                 <iframe className="pdf-preview" src={result.url} title={t.previewTitle} />
