@@ -54,6 +54,7 @@ export default function App() {
   })
   const blocking = rows.filter((x) => isBlocking(x.status))
   const canGenerate = reqData && blocking.length === 0 && !busy
+  const hintRows = rows.filter(({ r, f }) => r.has_expiry && f && f.expiryHint && !expiry[r.id])
   const usedIds = new Set(Object.values(match))
   const usedHashes = new Set(files.filter((f) => usedIds.has(f.id)).map((f) => f.hash))
   const unusedFiles = files.filter((f) => !usedIds.has(f.id) && !usedHashes.has(f.hash))
@@ -404,6 +405,11 @@ export default function App() {
           <p className="muted">{t.step3Help}</p>
           <div className="toolbar">
             {files.length > 0 && <button className="ghost" onClick={autoMatch}>✨ {t.autoMatch}</button>}
+            {hintRows.length > 0 && (
+              <button className="ghost" onClick={() => { setExpiry((prev) => ({ ...prev, ...Object.fromEntries(hintRows.map(({ r, f }) => [r.id, f.expiryHint])) })); invalidate() }}>
+                📅 {t.useAllDates} ({hintRows.length})
+              </button>
+            )}
             <div className="chips">
               {['ok', 'missing', 'expiryNeeded', 'expired', 'notProvided'].map((k) => {
                 const n = rows.filter((x) => x.status === k).length
