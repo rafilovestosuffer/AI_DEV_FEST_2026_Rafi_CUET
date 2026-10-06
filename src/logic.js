@@ -1,23 +1,27 @@
 // Pure rules: requirements parsing, status, blocking, auto-match.
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+// true, "true", "yes", 1 all count as true (tolerant of hand-written JSON)
+const truthy = (v) => v === true || v === 1 || /^(true|yes|y|1)$/i.test(String(v ?? '').trim())
 
 export function parseRequirements(text) {
-  const data = JSON.parse(text)
+  const data = JSON.parse(String(text).replace(/^\uFEFF/, ''))
   const t = data && data.tender
   if (!t || typeof t !== 'object') throw new Error('missing "tender"')
   if (!t.tender_id) throw new Error('missing tender_id')
-  if (!DATE_RE.test(String(t.submission_deadline || ''))) throw new Error('bad submission_deadline')
+  const dl = String(t.submission_deadline || '').trim().slice(0, 10) // tolerate a time part
+  if (!DATE_RE.test(dl)) throw new Error('bad submission_deadline')
   if (!Array.isArray(data.requirements) || data.requirements.length === 0) throw new Error('missing requirements')
   const reqs = data.requirements.map((r, i) => {
-    if (!r || !r.id) throw new Error(`requirement ${i + 1} has no id`)
+    if (!r || typeof r !== 'object') throw new Error(`requirement ${i + 1} is not an object`)
+    const ord = parseFloat(r.order)
     return {
-      id: String(r.id),
-      order: Number(r.order),
+      id: String(r.id ?? `R${i + 1}`),
+      order: Number.isFinite(ord) ? ord : 1000 + i, // missing order: keep file order, after numbered ones
       title_en: String(r.title_en || r.title_bn || r.id),
       title_bn: String(r.title_bn || r.title_en || r.id),
-      mandatory: r.mandatory === true,
-      has_expiry: r.has_expiry === true,
+      mandatory: truthy(r.mandatory),
+      has_expiry: truthy(r.has_expiry),
     }
   })
   const ids = new Set(reqs.map((r) => r.id))
@@ -29,7 +33,7 @@ export function parseRequirements(text) {
       title: String(t.title || ''),
       procuring_entity: String(t.procuring_entity || ''),
       bidder: String(t.bidder || ''),
-      submission_deadline: String(t.submission_deadline),
+      submission_deadline: dl,
     },
     requirements: reqs,
   }

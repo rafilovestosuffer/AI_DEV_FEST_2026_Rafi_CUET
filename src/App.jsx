@@ -33,6 +33,7 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [apiKey, setApiKey] = useState('') // kept in memory only, never saved
   const [aiBusy, setAiBusy] = useState(false)
+  const [viewer, setViewer] = useState(null) // file shown in the in-page viewer
   const [online, setOnline] = useState(() => navigator.onLine)
   useEffect(() => {
     const up = () => setOnline(true)
@@ -41,6 +42,21 @@ export default function App() {
     window.addEventListener('offline', down)
     return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down) }
   }, [])
+  // Messages pop up where the user can see them and close by themselves
+  useEffect(() => {
+    if (!notice) return
+    const id = setTimeout(() => setNotice(''), 9000)
+    return () => clearTimeout(id)
+  }, [notice])
+  useEffect(() => {
+    if (!viewer) return
+    const onKey = (e) => { if (e.key === 'Escape') setViewer(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [viewer])
+  useEffect(() => {
+    if (result?.url) document.getElementById('result')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [result?.url])
 
   const reqs = reqData ? reqData.requirements : [] // already sorted by order in parseRequirements
   const deadline = reqData?.tender.submission_deadline
@@ -70,6 +86,36 @@ export default function App() {
   const usedIds = new Set(Object.values(match))
   const usedHashes = new Set(files.filter((f) => usedIds.has(f.id)).map((f) => f.hash))
   const unusedFiles = files.filter((f) => !usedIds.has(f.id) && !usedHashes.has(f.hash))
+  const N = (n) => (lang === 'bn' ? String(n).replace(/\d/g, (d) => '০১২৩৪৫৬৭৮৯'[d]) : String(n))
+
+  // Plain-language reason shown under each status
+  function why(r, status) {
+    if (status === 'expired') return t.why_expired.replace('{exp}', expiry[r.id]).replace('{dl}', deadline)
+    if (status === 'ok') return r.has_expiry && expiry[r.id] ? t.why_okUntil.replace('{exp}', expiry[r.id]) : ''
+    return t['why_' + status] || ''
+  }
+
+  // Scroll to a document row, flash it and put the cursor where the user must act
+  function focusRow(reqId) {
+    const tr = document.getElementById('row-' + reqId)
+    if (!tr) return
+    tr.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    tr.classList.remove('flash')
+    void tr.offsetWidth
+    tr.classList.add('flash')
+    const el = tr.querySelector('input[type=date]') || tr.querySelector('select')
+    setTimeout(() => el && el.focus({ preventScroll: true }), 400)
+  }
+
+  // The one next thing the user should do (guided bar at the bottom)
+  const stepDone = [!!reqData, files.length > 0, !!reqData && files.length > 0 && blocking.length === 0, !!result]
+  const firstBlock = blocking[0]
+  let next
+  if (!reqData) next = { n: 1, text: t.next_json, label: t.chooseJson, act: () => document.getElementById('json-input')?.click() }
+  else if (!files.length) next = { n: 2, text: t.next_upload, label: t.choosePdfs, act: () => document.getElementById('pdf-input')?.click() }
+  else if (firstBlock) next = { n: 3, text: t['next_' + firstBlock.status].replace('{doc}', reqTitle(firstBlock.r)), label: t.go, act: () => focusRow(firstBlock.r.id) }
+  else if (!result) next = { n: 4, text: t.next_generate, label: t.generate, act: () => generate() }
+  else next = { n: 4, text: t.next_download, label: t.download, href: result.url, download: result.name }
 
   function invalidate() {
     if (result?.url) URL.revokeObjectURL(result.url)
@@ -86,8 +132,8 @@ export default function App() {
       setMatch({})
       setExpiry({})
       invalidate()
-    } catch {
-      setJsonError(t.badJson)
+    } catch (err) {
+      setJsonError(`${t.badJson}${err?.message ? ` (${err.message})` : ''}`)
     }
   }
 
@@ -142,12 +188,11 @@ export default function App() {
 
   // Why a file cannot be chosen for a requirement (null = allowed)
   function blockedReason(reqId, f) {
-    const usedBy = Object.entries(match).find(([rid, fid]) => fid === f.id && rid !== reqId)
-    if (usedBy) return 'used'
-    const dupUsed = Object.entries(match).some(
-      ([rid, fid]) => rid !== reqId && fid !== f.id && fileById(fid)?.hash === f.hash
-    )
-    if (dupUsed) return 'dup'
+    for (const [rid, fid] of Object.entries(match)) {
+      if (rid === reqId) continue
+      if (fid === f.id) return { kind: 'used', rid }
+      if (fileById(fid)?.hash === f.hash) return { kind: 'dup', rid }
+    }
     return null
   }
 
@@ -331,20 +376,20 @@ export default function App() {
           <p className="muted">{t.subtitle}</p>
         </div>
         <div className="head-actions">
-          <button className="lang" onClick={() => setLang(lang === 'en' ? 'bn' : 'en')}>{t.lang}</button>
+          <button className="lang" lang={lang === 'en' ? 'bn' : 'en'} title={t.switchLang} onClick={() => setLang(lang === 'en' ? 'bn' : 'en')}>{t.lang}</button>
           <button className="ghost" onClick={openWork}>{t.openProject}</button>
         </div>
       </header>
       <p className="privacy">🔒 {t.privacy}</p>
       {!online && <div className="offline">📴 {t.offline}</div>}
-      {notice && <div className="notice" onClick={() => setNotice('')}>{notice}</div>}
+      {notice && <div className="toast" role="status" aria-live="polite">{notice}<button aria-label={t.close} onClick={() => setNotice('')}>✕</button></div>}
 
       <section>
         <h2>{t.step1}</h2>
         <p className="muted">{t.step1Help}</p>
         <label className="btn">
           {t.chooseJson}
-          <input type="file" accept=".json,application/json" onChange={onJson} hidden />
+          <input id="json-input" type="file" accept=".json,application/json" onChange={onJson} hidden />
         </label>
         {jsonError && <p className="error">{jsonError}</p>}
         {reqData && (
@@ -369,7 +414,7 @@ export default function App() {
           <p className="muted">{t.step2Help}</p>
           <label className="btn">
             {t.choosePdfs}
-            <input type="file" multiple onChange={onPdfs} hidden />
+            <input id="pdf-input" type="file" multiple onChange={onPdfs} hidden />
           </label>
           <span className="muted drop-hint"> {t.dropHere}</span>
           {messages.map((m, i) => <p key={i} className="error">⚠ {m}</p>)}
@@ -387,12 +432,12 @@ export default function App() {
                   return (
                     <tr key={f.id} className={dupOf[f.id] ? 'dup' : ''}>
                       <td className="thumb-cell">
-                        <a href={f.url} target="_blank" rel="noreferrer" title={t.view}>
+                        <a href={f.url} title={t.view} onClick={(e) => { e.preventDefault(); setViewer(f) }}>
                           {f.thumb ? <img className="thumb" src={f.thumb} alt="" /> : <span className="thumb ph">PDF</span>}
                         </a>
                       </td>
                       <td>
-                        <a href={f.url} target="_blank" rel="noreferrer" className="fname" title={t.view}>{f.name}</a>
+                        <a href={f.url} className="fname" title={t.view} onClick={(e) => { e.preventDefault(); setViewer(f) }}>{f.name}</a>
                         {f.scanned && <div className="badge info">{t.scanned}</div>}
                         {dupOf[f.id] && (
                           <div className="badge warn">
@@ -400,7 +445,7 @@ export default function App() {
                           </div>
                         )}
                       </td>
-                      <td>{f.pages}</td>
+                      <td>{N(f.pages)}</td>
                       <td className="nowrap">{(f.size / 1024).toFixed(0)} KB</td>
                       <td>{r ? <strong>{reqTitle(r)}</strong> : <span className="muted">{t.notUsed}</span>}</td>
                       <td><button className="ghost" onClick={() => removeFile(f.id)}>{t.remove}</button></td>
@@ -420,7 +465,7 @@ export default function App() {
           <p className="muted">{t.step3Help}</p>
           {mandatoryRows.length > 0 && (
             <div className="ready" aria-label={t.readiness}>
-              <div className="ready-text">{t.readiness}: <strong>{readyCount} / {mandatoryRows.length}</strong></div>
+              <div className="ready-text">{t.readiness}: <strong>{N(readyCount)} / {N(mandatoryRows.length)}</strong></div>
               <div className="bar"><span style={{ width: `${(100 * readyCount) / mandatoryRows.length}%` }} /></div>
             </div>
           )}
@@ -434,7 +479,7 @@ export default function App() {
             <div className="chips">
               {['ok', 'missing', 'expiryNeeded', 'expired', 'notProvided'].map((k) => {
                 const n = rows.filter((x) => x.status === k).length
-                return n ? <span key={k} className={`status s-${k}`}>{t['st_' + k]}: {n}</span> : null
+                return n ? <span key={k} className={`status s-${k}`}>{t['st_' + k]}: {N(n)}</span> : null
               })}
             </div>
           </div>
@@ -445,30 +490,34 @@ export default function App() {
             </thead>
             <tbody>
               {rows.map(({ r, f, status }) => (
-                <tr key={r.id}>
-                  <td>{r.order}</td>
+                <tr key={r.id} id={'row-' + r.id}>
+                  <td>{N(r.order)}</td>
                   <td>
                     <strong>{reqTitle(r)}</strong>
                     <div className="muted small">{r.mandatory ? t.required : t.optional}</div>
                   </td>
                   <td>
-                    <select value={match[r.id] || ''} onChange={(e) => setReqFile(r.id, e.target.value)}>
+                    <div className="sel-wrap">
+                    <select value={match[r.id] || ''} onChange={(e) => setReqFile(r.id, e.target.value)} aria-label={`${t.file}: ${reqTitle(r)}`}>
                       <option value="">{t.noneSelected}</option>
                       {files.map((g) => {
-                        const why = blockedReason(r.id, g)
+                        const block = blockedReason(r.id, g)
+                        const other = block && reqs.find((x) => x.id === block.rid)
+                        const label = `${g.name} · ${N(g.pages)} ${g.pages === 1 ? t.pageUnit1 : t.pagesUnit}` +
+                          (block ? ` — ${block.kind === 'dup' ? t.duplicate + ', ' : ''}${t.usedFor} ${other ? reqTitle(other) : ''}` : '')
                         return (
-                          <option key={g.id} value={g.id} disabled={!!why} title={why === 'dup' ? t.dupBlocked : ''}>
-                            {g.name} ({g.pages}){why === 'dup' ? ` — ${t.duplicate}` : ''}
-                          </option>
+                          <option key={g.id} value={g.id} disabled={!!block}>{label}</option>
                         )
                       })}
                     </select>
+                    {match[r.id] && <button className="icon" title={t.clearMatch} aria-label={t.clearMatch} onClick={() => setReqFile(r.id, '')}>✕</button>}
+                    </div>
                   </td>
                   <td>
                     {r.has_expiry ? (
                       f ? (
                         <>
-                          <input type="date" value={expiry[r.id] || ''} onChange={(e) => { setExpiry({ ...expiry, [r.id]: e.target.value }); invalidate() }} />
+                          <input type="date" aria-label={`${t.expiry}: ${reqTitle(r)}`} value={expiry[r.id] || ''} onChange={(e) => { setExpiry({ ...expiry, [r.id]: e.target.value }); invalidate() }} />
                           {f.expiryHint && expiry[r.id] !== f.expiryHint && (
                             <button className="hint" onClick={() => { setExpiry({ ...expiry, [r.id]: f.expiryHint }); invalidate() }}>
                               {t.foundInFile}: {f.expiryHint} — {t.useDate}
@@ -480,6 +529,7 @@ export default function App() {
                   </td>
                   <td>
                     <span className={`status s-${status}`}>{t['st_' + status]}</span>
+                    {why(r, status) && <div className={`why ${isBlocking(status) ? 'bad' : ''}`}>{why(r, status)}</div>}
                     {status === 'ok' && r.has_expiry && expiry[r.id] && daysAfter(expiry[r.id], deadline) <= 30 && (
                       <div className="soon">⚠ {t.soon.replace('{n}', daysAfter(expiry[r.id], deadline))}</div>
                     )}
@@ -509,11 +559,11 @@ export default function App() {
             <div className="blockers">
               <p>{t.cannotGenerate}</p>
               <ul>
-                {blocking.map(({ r, status }) => <li key={r.id}>{reqTitle(r)}: <strong>{t['st_' + status]}</strong></li>)}
+                {blocking.map(({ r, status }) => <li key={r.id}><button className="linklike" onClick={() => focusRow(r.id)}>{reqTitle(r)}</button>: <strong>{t['st_' + status]}</strong> — {why(r, status)}</li>)}
               </ul>
               {blocking.some((x) => x.status === 'missing') && unusedFiles.length > 0 && (
                 <p className="hint-line">💡 {t.unusedHint}{' '}
-                  {unusedFiles.map((f, i) => <span key={f.id}>{i ? ', ' : ''}<a href={f.url} target="_blank" rel="noreferrer">{f.name}</a></span>)}
+                  {unusedFiles.map((f, i) => <span key={f.id}>{i ? ', ' : ''}<a href={f.url} onClick={(e) => { e.preventDefault(); setViewer(f) }}>{f.name}</a></span>)}
                 </p>
               )}
             </div>
@@ -555,8 +605,8 @@ export default function App() {
             <button className="ghost" onClick={saveWork}>{t.saveProject}</button>
           </div>
           {result && (
-            <div className="result">
-              <p>✔ {t.done} — {t.totalPages}: {result.total}</p>
+            <div className="result" id="result">
+              <p>✔ {t.done} — {t.totalPages}: {N(result.total)}</p>
               <a className="btn primary" href={result.url} download={result.name}>⬇ {t.download} {result.name}</a>
               <VerifyPanel report={result.report} lang={lang} />
               <details className="preview" open>
@@ -566,6 +616,36 @@ export default function App() {
             </div>
           )}
         </section>
+      )}
+
+      <div className="nextbar" role="region" aria-label={t.nextTitle}>
+        <div className="inner">
+          <ol className="steps" aria-hidden="true">
+            {[1, 2, 3, 4].map((n, i) => <li key={n} className={stepDone[i] ? 'done' : next.n === n ? 'cur' : ''}>{stepDone[i] ? '✓' : N(n)}</li>)}
+          </ol>
+          <div className="next-text" aria-live="polite">
+            <span className="muted small">{t.stepOf.replace('{n}', N(next.n))}</span>
+            <div>{next.text}</div>
+          </div>
+          {next.href
+            ? <a className="btn primary" href={next.href} download={next.download}>⬇ {next.label}</a>
+            : <button className="primary" disabled={busy} onClick={next.act}>{next.label}</button>}
+        </div>
+      </div>
+
+      {viewer && (
+        <div className="modal" role="dialog" aria-modal="true" aria-label={viewer.name} onClick={() => setViewer(null)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <strong title={viewer.name}>{viewer.name}</strong>
+              <span>
+                <a className="btn ghost-btn" href={viewer.url} target="_blank" rel="noreferrer">{t.openNewTab}</a>
+                <button className="ghost" onClick={() => setViewer(null)} autoFocus>{t.close}</button>
+              </span>
+            </div>
+            <iframe src={viewer.url} title={viewer.name} />
+          </div>
+        </div>
       )}
     </div>
   )
