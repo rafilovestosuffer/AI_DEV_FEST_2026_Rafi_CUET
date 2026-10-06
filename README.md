@@ -7,6 +7,8 @@
 A frontend-only web app that turns a set of PDF files into **one complete, checked, correctly ordered tender package** (`<tender_id>_Package.pdf`). It works fully in Bangla and English. All processing happens inside the browser: no server, no database, and no file ever leaves the computer.
 
 ## How to use (for office staff)
+A **guided bar at the bottom of the screen** always shows the step you are on (1–4) and the one next thing to do, for example *"Enter the expiry date of Trade License"*. Its **Show me** button jumps to that row and puts the cursor in the right field.
+
 1. **Open `requirements.json`.** The tender details and the required documents appear, sorted by `order`.
 2. **Upload the PDF files.** Select many at once or drag and drop them. Each file shows a page-1 thumbnail, its page count and its size; click a file to open it. Non-PDF, damaged and password-protected files are rejected with a clear message. Identical files are marked **Duplicate**.
 3. **Match each document to a file.** Use the dropdown, or click **Suggest matches from file names**. Enter the expiry date where asked; the app shows any date it found in the file as a one-click hint.
@@ -25,13 +27,13 @@ Deployment: GitHub Pages through `.github/workflows/deploy.yml`, run on every pu
 ## Main tasks (problem statement §4–6)
 | # | Task | Status |
 |---|---|---|
-| 4.1 | Load `requirements.json`, show the tender details and the documents sorted by `order` (validated; a clear error for a bad file) | ✅ |
+| 4.1 | Load `requirements.json`, show the tender details and the documents sorted by `order` (validated, with a clear error for a bad file; also accepts a BOM, `"true"`/`"yes"` strings, a deadline with a time part, or a missing `order`) | ✅ |
 | 4.2 | Multi-file upload, file name + page count, non-PDF rejected with a message, remove any file | ✅ |
 | 4.3 | One file ↔ one document; change or undo at any time (a file used elsewhere is disabled) | ✅ |
 | 4.4 | Expiry date input for `has_expiry` documents that have a file (cleared when the file changes) | ✅ |
-| 4.5 | Status per document, updated instantly: Missing / Expiry date needed / Expired / Not provided / OK | ✅ |
+| 4.5 | Status per document, updated instantly: Missing / Expiry date needed / Expired / Not provided / OK. Each status has a plain reason underneath, e.g. *"Expired on 2025-06-30, before the deadline 2026-10-20"* | ✅ |
 | 4.6 | Duplicates found by SHA-256 of the content (any file name); a duplicate cannot be matched to a different document | ✅ |
-| 4.7 | Generate disabled while anything is blocking, with the reasons listed | ✅ |
+| 4.7 | Generate disabled while anything is blocking, with the reasons listed; clicking a reason jumps to that document | ✅ |
 | 4.8 | Download as `<tender_id>_Package.pdf` | ✅ |
 | 4.9 | Whole UI in Bangla and English; document names from `title_bn` / `title_en` | ✅ |
 | 6.1 | English cover: tender ID, title, procuring entity, bidder, deadline, date made, documents in order | ✅ |
@@ -50,6 +52,7 @@ Status rules follow §5 exactly. Dates are compared as `YYYY-MM-DD` strings (no 
 - ✅ **Bad files handled safely:** non-PDF (header check, not only the extension), damaged and password-protected PDFs, and the 30-file / 50 MB limits each get a clear message.
 - ✅ **AI help (optional):** the user types their own Anthropic API key, which stays in memory and is never saved. On click, only the unused files are sent (text, or a picture of page 1 for scanned files) to suggest matches. Everything else works without AI. No key is in this repository or the site.
 - ➕ **Package self-check:** after generating, the app re-opens the finished PDF and checks §6 on the real file: page count = cover + index + all document pages, the footer on every page, page 1 is the cover, each document starts on its page in tender order (compared with the original file), and no document text sits under the footer. The result is shown as ✔/✖ in Bangla or English.
+- ➕ **Made for non-technical users:** a guided next-step bar, a plain reason under every status, clickable problem list, an in-page file viewer (Esc closes), an undo (✕) button on each match, dropdowns that say which document already uses a file, messages that pop up where you can see them, and Bangla digits in Bangla mode. Accessible labels and visible keyboard focus throughout.
 - ➕ **Works offline:** an installable web app with a service worker. After one visit it runs with no internet, which suits offices with unreliable connections. Only the app's own files are cached, never tender documents.
 - ➕ **Package preview in the page:** check the cover, index and page numbers before downloading.
 - ➕ **Readiness bar** ("Required documents ready: 7 / 8") and an **early expiry warning** when a document is valid 30 days or less after the deadline. The warning does not block; the §5 rules stay exactly as written.
@@ -75,9 +78,10 @@ Result: [`output/T-2026-0417_Package.pdf`](output/T-2026-0417_Package.pdf), 17 p
 | All fixed: every status OK, package ready, preview | [`03_all_ok_package_ready_en.png`](screenshots/03_all_ok_package_ready_en.png) |
 | The same screen in Bangla | [`04_all_ok_bangla.png`](screenshots/04_all_ok_bangla.png) |
 | Offline mode | [`05_offline_mode.png`](screenshots/05_offline_mode.png) |
+| Phone width (390 px), Bangla, no sideways scrolling | [`06_mobile_bangla.png`](screenshots/06_mobile_bangla.png) |
 
 ## Known problems / limits
-- The cover page is English only, as the rules require; Bangla appears on the index page.
+- The cover page is English, as the rules require. If the tender details themselves are written in Bangla, they are drawn as browser-rendered images so they show correctly instead of "?". Bangla titles also appear on the index page.
 - To make room for the footer, each original page is scaled to about 96 %. Nothing is cut off or covered.
 - Links and form fields inside the source PDFs are not kept (each page is re-placed as embedded vector content, which keeps text and images sharp but drops interactive parts).
 - Expiry hints only work for PDFs with a text layer; scanned documents need the date typed in.
