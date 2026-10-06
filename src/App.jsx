@@ -1,41 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import { T } from './i18n.js'
-import { inspectFile, statusOf, BLOCKING, buildPackage } from './pdf.js'
-
-const MAX_FILES = 30
-const MAX_BYTES = 50 * 1024 * 1024
+import { inspectFile, buildPackage, MAX_FILES, MAX_BYTES } from './pdf.js'
+import { parseRequirements, computeStatus, isBlocking, autoMatch as suggestMatches } from './logic.js'
 const SAVE_KEY = 'tender-package-builder:v1'
 
 let nextId = 1
-
-function validRequirements(j) {
-  return (
-    j && j.tender && typeof j.tender.tender_id === 'string' &&
-    /^\d{4}-\d{2}-\d{2}$/.test(j.tender.submission_deadline || '') &&
-    Array.isArray(j.requirements) &&
-    j.requirements.every((r) => r.id && typeof r.order === 'number' && r.title_en)
-  )
-}
-
-// Score how well a file name fits a requirement title (bonus: auto-match).
-const KEYWORDS = {
-  trade: ['trade', 'license', 'licence'], tin: ['tin'], vat: ['vat', 'bin'],
-  bank: ['bank', 'solvency'], experience: ['experience', 'exp'],
-  audit: ['audit', 'audited', 'financial_statement', 'statement'],
-  manufacturer: ['manufacturer', 'authorization', 'authorisation', 'maf'],
-  technical: ['technical'], financial: ['financial', 'price'], declaration: ['declaration', 'signed'],
-}
-function matchScore(name, title) {
-  const n = name.toLowerCase()
-  const words = title.toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter((w) => w.length > 2)
-  let s = 0
-  for (const w of words) if (n.includes(w)) s += 2
-  for (const keys of Object.values(KEYWORDS)) {
-    if (keys.some((k) => title.toLowerCase().includes(k)) && keys.some((k) => n.includes(k))) s += 1
-  }
-  if (/statement/.test(title.toLowerCase()) && !/statement|audit/.test(n)) s -= 3
-  return s
-}
 
 export default function App() {
   const [lang, setLang] = useState('en')
@@ -49,12 +18,10 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [notice, setNotice] = useState('')
+  const [dragOver, setDragOver] = useState(false)
   const pendingRestore = useRef(null) // reqId -> hash, from saved work
 
-  const reqs = useMemo(
-    () => (reqData ? [...reqData.requirements].sort((a, b) => a.order - b.order) : []),
-    [reqData]
-  )
+  const reqs = reqData ? reqData.requirements : [] // already sorted by order in parseRequirements
   const deadline = reqData?.tender.submission_deadline
   const reqTitle = (r) => (lang === 'bn' ? r.title_bn || r.title_en : r.title_en)
   const fileById = (id) => files.find((f) => f.id === id)
@@ -71,9 +38,9 @@ export default function App() {
 
   const rows = reqs.map((r) => {
     const f = match[r.id] ? fileById(match[r.id]) : null
-    return { r, f, status: statusOf(r, f, expiry[r.id], deadline) }
+    return { r, f, status: computeStatus(r, f?.id, expiry[r.id], deadline) }
   })
-  const blocking = rows.filter((x) => BLOCKING.includes(x.status))
+  const blocking = rows.filter((x) => isBlocking(x.status))
   const canGenerate = reqData && blocking.length === 0 && !busy
 
   function invalidate() {
@@ -86,9 +53,7 @@ export default function App() {
     e.target.value = ''
     if (!file) return
     try {
-      const j = JSON.parse(await file.text())
-      if (!validRequirements(j)) throw new Error()
-      setReqData(j)
+      setReqData(parseRequirements(await file.text()))
       setJsonError('')
       setMatch({})
       setExpiry({})
@@ -98,9 +63,14 @@ export default function App() {
     }
   }
 
-  async function onPdfs(e) {
+  function onPdfs(e) {
     const list = [...e.target.files]
     e.target.value = ''
+    addFiles(list)
+  }
+
+  async function addFiles(list) {
+    if (!list.length) return
     const msgs = []
     if (files.length + list.length > MAX_FILES) {
       setMessages([t.tooMany])
@@ -137,8 +107,10 @@ export default function App() {
   }
 
   function removeFile(id) {
+    const gone = Object.entries(match).filter(([, fid]) => fid === id).map(([rid]) => rid)
     setFiles((prev) => prev.filter((f) => f.id !== id))
     setMatch((prev) => Object.fromEntries(Object.entries(prev).filter(([, fid]) => fid !== id)))
+    setExpiry((prev) => Object.fromEntries(Object.entries(prev).filter(([rid]) => !gone.includes(rid))))
     invalidate()
   }
 
@@ -160,33 +132,19 @@ export default function App() {
       else m[reqId] = Number(val)
       return m
     })
+    // A different file needs its own expiry date
+    setExpiry((prev) => {
+      const x = { ...prev }
+      delete x[reqId]
+      return x
+    })
     invalidate()
   }
 
   function autoMatch() {
-    const m = { ...match }
-    const used = new Set(Object.values(m))
-    const usedHash = new Set(Object.values(m).map((id) => fileById(id)?.hash))
-    for (const r of reqs) {
-      if (m[r.id]) continue
-      let best = null
-      let bestScore = 1
-      for (const f of files) {
-        if (used.has(f.id) || usedHash.has(f.hash)) continue
-        const s = matchScore(f.name, r.title_en)
-        if (s > bestScore) {
-          best = f
-          bestScore = s
-        }
-      }
-      if (best) {
-        m[r.id] = best.id
-        used.add(best.id)
-        usedHash.add(best.hash)
-      }
-    }
-    setMatch(m)
-    setNotice(t.autoMatched)
+    const { matches, added } = suggestMatches(reqs, files, match)
+    setMatch(matches)
+    setNotice(added ? t.autoMatched : t.autoNone)
     invalidate()
   }
 
@@ -287,13 +245,19 @@ export default function App() {
       </section>
 
       {reqData && (
-        <section>
+        <section
+          className={dragOver ? 'drop over' : 'drop'}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles([...e.dataTransfer.files]) }}
+        >
           <h2>{t.step2}</h2>
           <p className="muted">{t.step2Help}</p>
           <label className="btn">
             {t.choosePdfs}
             <input type="file" multiple onChange={onPdfs} hidden />
           </label>
+          <span className="muted drop-hint"> {t.dropHere}</span>
           {messages.map((m, i) => <p key={i} className="error">⚠ {m}</p>)}
           {files.length === 0 ? (
             <p className="muted">{t.noFiles}</p>

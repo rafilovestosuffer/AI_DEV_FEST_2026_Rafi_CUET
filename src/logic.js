@@ -37,15 +37,15 @@ export function parseRequirements(text) {
 
 // Status per Section 5 of the problem statement.
 export function computeStatus(req, fileId, expiry, deadline) {
-  if (!fileId) return req.mandatory ? 'missing' : 'not_provided'
+  if (!fileId) return req.mandatory ? 'missing' : 'notProvided'
   if (req.has_expiry) {
-    if (!expiry || !DATE_RE.test(expiry)) return 'expiry_needed'
+    if (!expiry || !DATE_RE.test(expiry)) return 'expiryNeeded'
     if (expiry < deadline) return 'expired' // same day as deadline is still OK
   }
   return 'ok'
 }
 
-export const BLOCKING = new Set(['missing', 'expiry_needed', 'expired'])
+export const BLOCKING = new Set(['missing', 'expiryNeeded', 'expired'])
 export const isBlocking = (status) => BLOCKING.has(status)
 
 // Map file id -> list of other file ids with exactly the same content.
@@ -125,7 +125,7 @@ export function autoMatch(requirements, files, matches) {
       if (s >= 1) pairs.push({ r, f, s, y: latestYear(f.name) })
     }
   }
-  pairs.sort((a, b) => b.s - a.s || b.y - a.y)
+  pairs.sort((a, b) => b.s - a.s || b.y - a.y || a.f.name.length - b.f.name.length)
   let added = 0
   for (const p of pairs) {
     if (next[p.r.id] || usedHashes.has(p.f.hash)) continue

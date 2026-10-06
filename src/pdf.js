@@ -1,145 +1,193 @@
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib'
+import { todayISO } from './logic.js'
 
-const FOOTER_H = 28 // extra strip added under each page so the footer never covers content
+const FOOTER_H = 30 // reserved band at the bottom of every page; content is scaled to sit above it
+const A4 = [595.28, 841.89]
 
-// Read a file: check it is a real PDF, count pages, hash content.
+export const MAX_FILES = 30
+export const MAX_BYTES = 50 * 1024 * 1024
+
+async function sha256(bytes) {
+  const buf = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+// Check a file is a real, readable, unlocked PDF; count pages; hash content.
+// Returns { bytes, hash, pages } or { error: 'notPdf' | 'encrypted' | 'damaged' }.
 export async function inspectFile(file) {
+  const isPdfName = /\.pdf$/i.test(file.name)
   const bytes = new Uint8Array(await file.arrayBuffer())
-  const head = String.fromCharCode(...bytes.slice(0, 1024))
-  const isPdfName = file.name.toLowerCase().endsWith('.pdf')
-  if (!isPdfName || !head.includes('%PDF')) return { error: 'notPdf' }
-  const hashBuf = await crypto.subtle.digest('SHA-256', bytes)
-  const hash = [...new Uint8Array(hashBuf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const head = new TextDecoder('latin1').decode(bytes.slice(0, 1024))
+  if (!head.includes('%PDF-')) return { error: isPdfName ? 'damaged' : 'notPdf' }
+  if (!isPdfName && file.type && file.type !== 'application/pdf') return { error: 'notPdf' }
+  const hash = await sha256(bytes)
   try {
-    const doc = await PDFDocument.load(bytes)
-    return { bytes, hash, pages: doc.getPageCount() }
+    const doc = await PDFDocument.load(bytes, { updateMetadata: false })
+    const pages = doc.getPageCount()
+    if (!pages) return { error: 'damaged' }
+    return { bytes, hash, pages }
   } catch (e) {
-    const msg = String(e && e.message)
-    return { error: /encrypt/i.test(msg) ? 'encrypted' : 'damaged' }
+    return { error: /encrypt/i.test(String(e && e.message)) ? 'encrypted' : 'damaged' }
   }
 }
 
-// Status of one requirement, per Section 5 of the problem statement.
-export function statusOf(req, file, expiry, deadline) {
-  if (!file) return req.mandatory ? 'missing' : 'notProvided'
-  if (req.has_expiry) {
-    if (!expiry) return 'expiryNeeded'
-    if (expiry < deadline) return 'expired' // ISO dates compare correctly as strings
-  }
-  return 'ok'
-}
-
-export const BLOCKING = ['missing', 'expiryNeeded', 'expired']
-
-export function todayISO() {
-  const d = new Date()
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
-
-// Helvetica only covers WinAnsi; drop anything else so cover text never crashes.
-const safe = (s) => String(s ?? '').replace(/[^\x20-\x7E]/g, '?')
+// Standard PDF fonts only cover Latin-1; replace anything else so drawing never throws.
+const safe = (s) => String(s ?? '').replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
+  .replace(/[–—]/g, '-').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?')
 
 function wrap(text, font, size, maxW) {
-  const words = safe(text).split(' ')
+  const words = safe(text).split(/\s+/)
   const lines = []
   let line = ''
   for (const w of words) {
     const t = line ? line + ' ' + w : w
-    if (font.widthOfTextAtSize(t, size) > maxW && line) {
-      lines.push(line)
-      line = w
-    } else line = t
+    if (line && font.widthOfTextAtSize(t, size) > maxW) { lines.push(line); line = w } else line = t
   }
   if (line) lines.push(line)
-  return lines
+  return lines.length ? lines : ['']
 }
 
-// items: [{ req, file, expiry }] already sorted by order, only those with a file.
+function fitText(text, font, size, maxW) {
+  let s = safe(text)
+  if (font.widthOfTextAtSize(s, size) <= maxW) return s
+  while (s.length > 1 && font.widthOfTextAtSize(s + '...', size) > maxW) s = s.slice(0, -1)
+  return s + '...'
+}
+
+// Draw one source page scaled into the area above the footer band, honouring /Rotate.
+function drawScaled(out, src, emb) {
+  const rot = ((src.getRotation().angle % 360) + 360) % 360
+  const ew = emb.width
+  const eh = emb.height
+  const side = rot === 90 || rot === 270
+  const W = side ? eh : ew // displayed size
+  const H = side ? ew : eh
+  const page = out.addPage([W, H])
+  const s = (H - FOOTER_H) / H
+  const x0 = (W - W * s) / 2
+  const y0 = FOOTER_H
+  const opts = { xScale: s, yScale: s }
+  if (rot === 0) page.drawPage(emb, { ...opts, x: x0, y: y0 })
+  else if (rot === 90) page.drawPage(emb, { ...opts, x: x0, y: y0 + ew * s, rotate: degrees(-90) })
+  else if (rot === 180) page.drawPage(emb, { ...opts, x: x0 + ew * s, y: y0 + eh * s, rotate: degrees(180) })
+  else page.drawPage(emb, { ...opts, x: x0 + eh * s, y: y0, rotate: degrees(90) })
+  return page
+}
+
+// Fallback if a page cannot be embedded: copy it and grow the page downward for the footer band.
+function copyWithBand(page) {
+  const box = page.getCropBox()
+  const rot = ((page.getRotation().angle % 360) + 360) % 360
+  if (rot !== 0) return page // rare; footer still drawn by caller in page coordinates
+  page.setMediaBox(box.x, box.y - FOOTER_H, box.width, box.height + FOOTER_H)
+  page.setCropBox(box.x, box.y - FOOTER_H, box.width, box.height + FOOTER_H)
+  return page
+}
+
+// items: [{ req, file }] sorted by order, only requirements that have a file.
 export async function buildPackage(tender, items, { withIndex = true } = {}) {
   const out = await PDFDocument.create()
+  out.setTitle(`${safe(tender.tender_id)} Package`)
+  out.setCreator('Tender Package Builder')
   const font = await out.embedFont(StandardFonts.Helvetica)
   const bold = await out.embedFont(StandardFonts.HelveticaBold)
-  const A4 = [595.28, 841.89]
-  const made = todayISO()
-
-  // Cover page
-  const cover = out.addPage(A4)
-  let y = 780
-  const left = 60
+  const left = 56
   const maxW = A4[0] - 2 * left
-  cover.drawText('TENDER SUBMISSION PACKAGE', { x: left, y, size: 20, font: bold })
-  y -= 40
+  const ink = rgb(0.1, 0.1, 0.12)
+  const muted = rgb(0.4, 0.4, 0.45)
+
+  const front = withIndex ? 2 : 1
+  const starts = []
+  let next = front + 1
+  for (const it of items) { starts.push(next); next += it.file.pages }
+  const total = next - 1
+
+  // ---- Cover page (English) ----
+  const cover = out.addPage(A4)
+  let y = A4[1] - 70
+  cover.drawText('TENDER SUBMISSION PACKAGE', { x: left, y, size: 20, font: bold, color: ink })
+  y -= 12
+  cover.drawLine({ start: { x: left, y }, end: { x: A4[0] - left, y }, thickness: 1.2, color: ink })
+  y -= 30
   const rows = [
     ['Tender ID', tender.tender_id],
     ['Tender Title', tender.title],
     ['Procuring Entity', tender.procuring_entity],
     ['Bidder', tender.bidder],
     ['Submission Deadline', tender.submission_deadline],
-    ['Package Created', made],
+    ['Package Created', todayISO()],
   ]
   for (const [k, v] of rows) {
-    cover.drawText(k + ':', { x: left, y, size: 11, font: bold })
-    const lines = wrap(v, font, 11, maxW - 140)
-    lines.forEach((ln, i) => cover.drawText(ln, { x: left + 140, y: y - i * 15, size: 11, font }))
-    y -= 15 * Math.max(1, lines.length) + 6
+    cover.drawText(k + ':', { x: left, y, size: 11.5, font: bold, color: ink })
+    const lines = wrap(v, font, 11.5, maxW - 150)
+    lines.forEach((ln, i) => cover.drawText(ln, { x: left + 150, y: y - i * 15, size: 11.5, font, color: ink }))
+    y -= 15 * lines.length + 8
   }
-  y -= 14
-  cover.drawText('Included Documents (in order)', { x: left, y, size: 13, font: bold })
+  y -= 18
+  cover.drawText('Included Documents (in order)', { x: left, y, size: 13.5, font: bold, color: ink })
   y -= 22
+  const lineH = items.length > 22 ? Math.max(11, Math.floor((y - FOOTER_H - 20) / items.length)) : 18
+  const fs = Math.min(11, lineH - 4)
   items.forEach((it, i) => {
     const pg = it.file.pages
-    const line = `${i + 1}. ${it.req.title_en}  (${pg} page${pg > 1 ? 's' : ''})`
-    cover.drawText(safe(line), { x: left + 10, y, size: 11, font })
-    y -= 17
+    const label = `${i + 1}. ${it.req.title_en}`
+    cover.drawText(fitText(label, font, fs, maxW - 150), { x: left + 6, y, size: fs, font, color: ink })
+    const right = `${pg} page${pg === 1 ? '' : 's'}`
+    cover.drawText(right, { x: A4[0] - left - font.widthOfTextAtSize(right, fs), y, size: fs, font, color: muted })
+    y -= lineH
   })
 
-  // Index page (bonus): where each document starts
-  let index = null
-  if (withIndex) index = out.addPage(A4)
-  const front = withIndex ? 2 : 1
-  const starts = []
-  let next = front + 1
-  for (const it of items) {
-    starts.push(next)
-    next += it.file.pages
-  }
-  if (index) {
-    let iy = 780
-    index.drawText('INDEX', { x: left, y: iy, size: 20, font: bold })
-    iy -= 36
-    index.drawText('Document', { x: left, y: iy, size: 11, font: bold })
-    index.drawText('Start page', { x: A4[0] - left - 70, y: iy, size: 11, font: bold })
+  // ---- Index page (bonus): start page of each document ----
+  if (withIndex) {
+    const index = out.addPage(A4)
+    let iy = A4[1] - 70
+    index.drawText('INDEX', { x: left, y: iy, size: 20, font: bold, color: ink })
+    iy -= 12
+    index.drawLine({ start: { x: left, y: iy }, end: { x: A4[0] - left, y: iy }, thickness: 1.2, color: ink })
+    iy -= 26
+    index.drawText('Document', { x: left, y: iy, size: 11, font: bold, color: ink })
+    index.drawText('Pages', { x: A4[0] - left - 150, y: iy, size: 11, font: bold, color: ink })
+    index.drawText('Starts on page', { x: A4[0] - left - font.widthOfTextAtSize('Starts on page', 11) - 2, y: iy, size: 11, font: bold, color: ink })
     iy -= 20
+    const ih = items.length > 30 ? Math.max(11, Math.floor((iy - FOOTER_H - 20) / items.length)) : 19
+    const ifs = Math.min(11, ih - 4)
     items.forEach((it, i) => {
-      index.drawText(safe(`${i + 1}. ${it.req.title_en}`), { x: left, y: iy, size: 11, font })
-      index.drawText(String(starts[i]), { x: A4[0] - left - 70, y: iy, size: 11, font })
-      iy -= 18
+      index.drawText(fitText(`${i + 1}. ${it.req.title_en}`, font, ifs, maxW - 170), { x: left, y: iy, size: ifs, font, color: ink })
+      index.drawText(String(it.file.pages), { x: A4[0] - left - 140, y: iy, size: ifs, font, color: muted })
+      const sp = String(starts[i])
+      index.drawText(sp, { x: A4[0] - left - font.widthOfTextAtSize(sp, ifs) - 2, y: iy, size: ifs, font, color: ink })
+      iy -= ih
     })
   }
 
-  // Documents, all pages in original order
+  // ---- Documents: all pages in original order ----
   for (const it of items) {
-    const src = await PDFDocument.load(it.file.bytes)
-    const pages = await out.copyPages(src, src.getPageIndices())
-    pages.forEach((p) => out.addPage(p))
+    const src = await PDFDocument.load(it.file.bytes, { updateMetadata: false })
+    const srcPages = src.getPages()
+    for (let i = 0; i < srcPages.length; i++) {
+      const sp = srcPages[i]
+      try {
+        const cb = sp.getCropBox()
+        const emb = await out.embedPage(sp, { left: cb.x, bottom: cb.y, right: cb.x + cb.width, top: cb.y + cb.height })
+        drawScaled(out, sp, emb)
+      } catch {
+        const [copied] = await out.copyPages(src, [i])
+        out.addPage(copyWithBand(copied))
+      }
+    }
   }
 
-  // Footer on every page, in a strip added below the content
-  const all = out.getPages()
-  const total = all.length
-  all.forEach((page, i) => {
-    const box = page.getMediaBox()
-    const nx = box.x
-    const ny = box.y - FOOTER_H
-    page.setMediaBox(nx, ny, box.width, box.height + FOOTER_H)
-    page.setCropBox(nx, ny, box.width, box.height + FOOTER_H)
-    page.drawRectangle({ x: nx, y: ny, width: box.width, height: FOOTER_H, color: rgb(1, 1, 1) })
-    page.drawLine({ start: { x: nx, y: ny + FOOTER_H }, end: { x: nx + box.width, y: ny + FOOTER_H }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) })
+  // ---- Footer on every page: "<tender_id> | Page X of Y" ----
+  const pages = out.getPages()
+  if (pages.length !== total) throw new Error(`page count mismatch (${pages.length} vs ${total})`)
+  pages.forEach((page, i) => {
+    const box = page.getCropBox()
     const text = safe(`${tender.tender_id} | Page ${i + 1} of ${total}`)
     const size = 10
     const w = font.widthOfTextAtSize(text, size)
-    page.drawText(text, { x: nx + (box.width - w) / 2, y: ny + 10, size, font, color: rgb(0, 0, 0) })
+    page.drawRectangle({ x: box.x, y: box.y, width: box.width, height: FOOTER_H - 2, color: rgb(1, 1, 1) })
+    page.drawLine({ start: { x: box.x + 30, y: box.y + FOOTER_H - 4 }, end: { x: box.x + box.width - 30, y: box.y + FOOTER_H - 4 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) })
+    page.drawText(text, { x: box.x + (box.width - w) / 2, y: box.y + 10, size, font, color: rgb(0, 0, 0) })
   })
 
   return { bytes: await out.save(), total, starts }

@@ -34,3 +34,5 @@ select, input[type=date] { font:inherit; padding:6px; border:1px solid var(--lin
 .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
 .result { margin-top:14px; padding:12px; background:#e9f7ee; border-radius:8px; }
 @media (max-width:720px) { table.reqs, table.reqs tbody, table.reqs tr, table.reqs td { display:block; } table.reqs thead { display:none; } table.reqs tr { border-bottom:2px solid var(--line); padding:6px 0; } table.reqs td { border:none; padding:4px 0; } }
+.drop.over { outline:3px dashed var(--primary); background:#eef4ff; }
+.drop-hint { margin-left:8px; }
