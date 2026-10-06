@@ -52,6 +52,9 @@ export default function App() {
   })
   const blocking = rows.filter((x) => isBlocking(x.status))
   const canGenerate = reqData && blocking.length === 0 && !busy
+  const usedIds = new Set(Object.values(match))
+  const usedHashes = new Set(files.filter((f) => usedIds.has(f.id)).map((f) => f.hash))
+  const unusedFiles = files.filter((f) => !usedIds.has(f.id) && !usedHashes.has(f.hash))
 
   function invalidate() {
     if (result?.url) URL.revokeObjectURL(result.url)
@@ -98,10 +101,16 @@ export default function App() {
         msgs.push(`"${file.name}" ${t[info.error]}`)
         continue
       }
-      const extra = await analyzePdf(info.bytes)
-      added.push({ id: nextId++, name: file.name, size: file.size, url: URL.createObjectURL(new Blob([info.bytes], { type: 'application/pdf' })), ...info, ...extra })
+      added.push({ id: nextId++, name: file.name, size: file.size, url: URL.createObjectURL(new Blob([info.bytes], { type: 'application/pdf' })), ...info })
     }
     setFiles((prev) => [...prev, ...added])
+    // Thumbnails, text and expiry hints load in the background so the list appears at once
+    ;(async () => {
+      for (const f of added) {
+        const extra = await analyzePdf(f.bytes)
+        setFiles((prev) => prev.map((g) => (g.id === f.id ? { ...g, ...extra } : g)))
+      }
+    })()
     // Re-apply saved matches (by content hash) after "Open saved work"
     if (pendingRestore.current) {
       setMatch((prev) => {
@@ -425,6 +434,11 @@ export default function App() {
               <ul>
                 {blocking.map(({ r, status }) => <li key={r.id}>{reqTitle(r)}: <strong>{t['st_' + status]}</strong></li>)}
               </ul>
+              {blocking.some((x) => x.status === 'missing') && unusedFiles.length > 0 && (
+                <p className="hint-line">💡 {t.unusedHint}{' '}
+                  {unusedFiles.map((f, i) => <span key={f.id}>{i ? ', ' : ''}<a href={f.url} target="_blank" rel="noreferrer">{f.name}</a></span>)}
+                </p>
+              )}
             </div>
           ) : (
             <p className="ok-text">✔ {t.ready}</p>

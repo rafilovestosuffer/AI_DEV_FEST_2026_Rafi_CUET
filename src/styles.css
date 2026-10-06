@@ -53,3 +53,5 @@ details.seal summary { cursor:pointer; font-weight:600; }
 .seal-img { height:48px; border:1px solid var(--line); border-radius:4px; background:#fff; }
 .ghost-btn { background:#fff; color:var(--primary); }
 input.text { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; width:140px; }
+.hint-line { margin:10px 0 0; color:var(--text); font-weight:400; }
+.blockers .hint-line { color:var(--text); font-weight:400; }

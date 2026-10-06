@@ -46,7 +46,8 @@ export function findExpiry(text) {
 // Thumbnail of page 1 + text of the first pages. Never throws.
 export async function analyzePdf(bytes) {
   try {
-    const doc = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise
+    const task = pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false })
+    const doc = await task.promise
     let text = ''
     for (let p = 1; p <= Math.min(doc.numPages, 3); p++) {
       const page = await doc.getPage(p)
@@ -61,9 +62,10 @@ export async function analyzePdf(bytes) {
     canvas.height = Math.ceil(vp.height)
     await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp, canvas }).promise
     const thumb = canvas.toDataURL('image/jpeg', 0.75)
-    doc.destroy()
+    task.destroy()
     return { thumb, text: text.trim(), scanned: text.trim().length < 20, expiryHint: findExpiry(text) }
-  } catch {
+  } catch (e) {
+    console.warn('PDF preview failed:', e)
     return { thumb: null, text: '', scanned: false, expiryHint: null }
   }
 }

@@ -79,6 +79,7 @@ export const T = {
     sealCustom: 'Chosen package pages',
     sealNone: 'Nowhere',
     sealBadPng: 'The seal must be a PNG image.',
+    unusedHint: 'These uploaded files are not used yet. Open them to check if one is the missing document:',
     genError: 'Could not create the package:',
   },
   bn: {
@@ -161,6 +162,7 @@ export const T = {
     sealCustom: 'নির্দিষ্ট পৃষ্ঠায়',
     sealNone: 'কোথাও না',
     sealBadPng: 'সিলের ছবি অবশ্যই PNG হতে হবে।',
+    unusedHint: 'এই আপলোড করা ফাইলগুলো এখনও ব্যবহার হয়নি। অনুপস্থিত নথিটি এদের মধ্যে আছে কিনা খুলে দেখুন:',
     genError: 'প্যাকেজ তৈরি করা যায়নি:',
   },
 }
